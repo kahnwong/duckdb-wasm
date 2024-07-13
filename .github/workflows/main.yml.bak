@@ -5,7 +5,22 @@ on:
     create:
         tags:
             - v*
+    workflow_call:
+      inputs:
+        override_git_describe:
+          type: string
+        git_ref:
+          type: string
+        skip_tests:
+          type: string
     workflow_dispatch:
+      inputs:
+        override_git_describe:
+          type: string
+        git_ref:
+          type: string
+        skip_tests:
+          type: string
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}-${{ github.head_ref || '' }}-${{ github.base_ref || '' }}-${{ github.ref != 'refs/heads/main' || github.sha }}
@@ -21,7 +36,7 @@ jobs:
                   submodules: 'recursive'
 
             - name: Lint ./lib
-              uses: duckdb/duckdb-wasm-ci-env@ae43fa250a6b6ba92fe3d825c6c34b6d68a258a0
+              uses: duckdb/duckdb-wasm-ci-env@f10a0954b7b2b98e8526e0f7bbcb10e614defcbd
               with:
                   script: |-
                       python3 ./scripts/run_clang_format.py \
@@ -50,25 +65,25 @@ jobs:
                       ${{ runner.os }}-yarn-
 
             - name: Prepare repository
-              uses: duckdb/duckdb-wasm-ci-env@ae43fa250a6b6ba92fe3d825c6c34b6d68a258a0
+              uses: duckdb/duckdb-wasm-ci-env@f10a0954b7b2b98e8526e0f7bbcb10e614defcbd
               with:
                   script: |-
                       yarn install --frozen-lockfile --prefer-offline
 
             - name: Lint @duckdb/duckdb-wasm
-              uses: duckdb/duckdb-wasm-ci-env@ae43fa250a6b6ba92fe3d825c6c34b6d68a258a0
+              uses: duckdb/duckdb-wasm-ci-env@f10a0954b7b2b98e8526e0f7bbcb10e614defcbd
               with:
                   script: |-
                       yarn workspace @duckdb/duckdb-wasm run lint
 
             - name: Lint @duckdb/duckdb-wasm-shell
-              uses: duckdb/duckdb-wasm-ci-env@ae43fa250a6b6ba92fe3d825c6c34b6d68a258a0
+              uses: duckdb/duckdb-wasm-ci-env@f10a0954b7b2b98e8526e0f7bbcb10e614defcbd
               with:
                   script: |-
                       yarn workspace @duckdb/duckdb-wasm-shell run lint
 
             - name: Lint @duckdb/benchmarks
-              uses: duckdb/duckdb-wasm-ci-env@ae43fa250a6b6ba92fe3d825c6c34b6d68a258a0
+              uses: duckdb/duckdb-wasm-ci-env@f10a0954b7b2b98e8526e0f7bbcb10e614defcbd
               with:
                   script: |-
                       yarn workspace @duckdb/benchmarks run lint
@@ -90,7 +105,7 @@ jobs:
 
             - name: Build generator
               if: steps.cache-generator.outputs.cache-hit != 'true'
-              uses: duckdb/duckdb-wasm-ci-env@ae43fa250a6b6ba92fe3d825c6c34b6d68a258a0
+              uses: duckdb/duckdb-wasm-ci-env@f10a0954b7b2b98e8526e0f7bbcb10e614defcbd
               with:
                   script: |-
                       make -C ./submodules/tpch-dbgen/dbgen/ dbgen
@@ -183,10 +198,11 @@ jobs:
             - name: Prepare repository
               run: |
                   (cd ./submodules/duckdb && git fetch --all --tags)
-                  [ -f duckdb.patch ] && cd submodules/duckdb && git apply ../../duckdb.patch || echo "No patching needed"
+                  make patch_duckdb
+                  cd submodules/duckdb && git tag ${{ inputs.override_git_describe }}
 
             - name: Prepare environment
-              uses: duckdb/duckdb-wasm-ci-env@ae43fa250a6b6ba92fe3d825c6c34b6d68a258a0
+              uses: duckdb/duckdb-wasm-ci-env@f10a0954b7b2b98e8526e0f7bbcb10e614defcbd
               with:
                   script: |-
                       mkdir -p ./lib/build/debug ./reports
@@ -197,7 +213,7 @@ jobs:
                       ccache -s
 
             - name: Build project
-              uses: duckdb/duckdb-wasm-ci-env@ae43fa250a6b6ba92fe3d825c6c34b6d68a258a0
+              uses: duckdb/duckdb-wasm-ci-env@f10a0954b7b2b98e8526e0f7bbcb10e614defcbd
               with:
                   script: |-
                       cmake \
@@ -214,7 +230,7 @@ jobs:
                       ccache -s
 
             - name: Test project
-              uses: duckdb/duckdb-wasm-ci-env@ae43fa250a6b6ba92fe3d825c6c34b6d68a258a0
+              uses: duckdb/duckdb-wasm-ci-env@f10a0954b7b2b98e8526e0f7bbcb10e614defcbd
               with:
                   script: |-
                       export LLVM_PROFILE_FILE=./reports/lib.profraw
@@ -223,7 +239,7 @@ jobs:
                           --gtest_output=xml:./reports/tests_lib_debug.xml
 
             - name: Code Coverage
-              uses: duckdb/duckdb-wasm-ci-env@ae43fa250a6b6ba92fe3d825c6c34b6d68a258a0
+              uses: duckdb/duckdb-wasm-ci-env@f10a0954b7b2b98e8526e0f7bbcb10e614defcbd
               with:
                   script: |-
                       llvm-profdata merge \
@@ -280,10 +296,11 @@ jobs:
             - name: Prepare repository
               run: |
                   (cd ./submodules/duckdb && git fetch --all --tags)
-                  [ -f duckdb.patch ] && cd submodules/duckdb && git apply ../../duckdb.patch || echo "No patching needed"
+                  make patch_duckdb
+                  cd submodules/duckdb && git tag ${{ inputs.override_git_describe }}
 
             - name: Prepare environment
-              uses: duckdb/duckdb-wasm-ci-env@ae43fa250a6b6ba92fe3d825c6c34b6d68a258a0
+              uses: duckdb/duckdb-wasm-ci-env@f10a0954b7b2b98e8526e0f7bbcb10e614defcbd
               with:
                   script: |-
                       mkdir -p ./lib/build/release ./reports
@@ -294,7 +311,7 @@ jobs:
                       ccache -s
 
             - name: Build project
-              uses: duckdb/duckdb-wasm-ci-env@ae43fa250a6b6ba92fe3d825c6c34b6d68a258a0
+              uses: duckdb/duckdb-wasm-ci-env@f10a0954b7b2b98e8526e0f7bbcb10e614defcbd
               with:
                   script: |-
                       cmake \
@@ -311,7 +328,7 @@ jobs:
                       ccache -s
 
             - name: Test project
-              uses: duckdb/duckdb-wasm-ci-env@ae43fa250a6b6ba92fe3d825c6c34b6d68a258a0
+              uses: duckdb/duckdb-wasm-ci-env@f10a0954b7b2b98e8526e0f7bbcb10e614defcbd
               with:
                   script: |-
                       export LLVM_PROFILE_FILE=./reports/lib.profraw
@@ -320,7 +337,7 @@ jobs:
                           --gtest_output=xml:./reports/tests_lib_release.xml
 
             - name: Code Coverage
-              uses: duckdb/duckdb-wasm-ci-env@ae43fa250a6b6ba92fe3d825c6c34b6d68a258a0
+              uses: duckdb/duckdb-wasm-ci-env@f10a0954b7b2b98e8526e0f7bbcb10e614defcbd
               with:
                   script: |-
                       llvm-profdata merge \
@@ -345,7 +362,8 @@ jobs:
 
             - name: Prepare repository
               run: |
-                  [ -f duckdb.patch ] && cd submodules/duckdb && git apply ../../duckdb.patch || echo "No patching needed"
+                  make patch_duckdb
+                  cd submodules/duckdb && git tag ${{ inputs.override_git_describe }}
 
             - uses: mymindstorm/setup-emsdk@v14
               with:
@@ -387,7 +405,8 @@ jobs:
 
             - name: Prepare repository
               run: |
-                  [ -f duckdb.patch ] && cd submodules/duckdb && git apply ../../duckdb.patch || echo "No patching needed"
+                  make patch_duckdb
+                  cd submodules/duckdb && git tag ${{ inputs.override_git_describe }}
 
             - uses: mymindstorm/setup-emsdk@v14
               with:
@@ -429,7 +448,8 @@ jobs:
 
             - name: Prepare repository
               run: |
-                  [ -f duckdb.patch ] && cd submodules/duckdb && git apply ../../duckdb.patch || echo "No patching needed"
+                  make patch_duckdb
+                  cd submodules/duckdb && git tag ${{ inputs.override_git_describe }}
 
             - uses: mymindstorm/setup-emsdk@v14
               with:
@@ -472,7 +492,8 @@ jobs:
 
             - name: Prepare repository
               run: |
-                  [ -f duckdb.patch ] && cd submodules/duckdb && git apply ../../duckdb.patch || echo "No patching needed"
+                  make patch_duckdb
+                  cd submodules/duckdb && git tag ${{ inputs.override_git_describe }}
 
             - uses: mymindstorm/setup-emsdk@v14
               with:
@@ -515,7 +536,8 @@ jobs:
 
             - name: Prepare repository
               run: |
-                  [ -f duckdb.patch ] && cd submodules/duckdb && git apply ../../duckdb.patch || echo "No patching needed"
+                  make patch_duckdb
+                  cd submodules/duckdb && git tag ${{ inputs.override_git_describe }}
 
             - uses: mymindstorm/setup-emsdk@v14
               with:
@@ -558,7 +580,8 @@ jobs:
 
             - name: Prepare repository
               run: |
-                  [ -f duckdb.patch ] && cd submodules/duckdb && git apply ../../duckdb.patch || echo "No patching needed"
+                  make patch_duckdb
+                  cd submodules/duckdb && git tag ${{ inputs.override_git_describe }}
 
             - uses: mymindstorm/setup-emsdk@v14
               with:
@@ -668,7 +691,7 @@ jobs:
                   (cd ./submodules/duckdb && git fetch --all --tags)
 
             - name: Prepare environment
-              uses: duckdb/duckdb-wasm-ci-env@ae43fa250a6b6ba92fe3d825c6c34b6d68a258a0
+              uses: duckdb/duckdb-wasm-ci-env@f10a0954b7b2b98e8526e0f7bbcb10e614defcbd
               with:
                   script: |-
                       git config --global --add safe.directory '*'
@@ -707,7 +730,7 @@ jobs:
                       CHROME_BIN=`which google-chrome` yarn workspace @duckdb/duckdb-wasm test:chrome
             
             #            - name: Test @duckdb/duckdb-wasm on Firefox
-            #              uses: duckdb/duckdb-wasm-ci-env@ae43fa250a6b6ba92fe3d825c6c34b6d68a258a0
+            #              uses: duckdb/duckdb-wasm-ci-env@f10a0954b7b2b98e8526e0f7bbcb10e614defcbd
             #              with:
             #                  script: |-
             #                      yarn workspace @duckdb/duckdb-wasm test:firefox
@@ -768,7 +791,7 @@ jobs:
 
             - name: Preparation TPCH 0.01
               if: github.ref == 'refs/heads/main'
-              uses: duckdb/duckdb-wasm-ci-env@ae43fa250a6b6ba92fe3d825c6c34b6d68a258a0
+              uses: duckdb/duckdb-wasm-ci-env@f10a0954b7b2b98e8526e0f7bbcb10e614defcbd
               with:
                   script: |-
                       git config --global --add safe.directory '*'
@@ -802,7 +825,7 @@ jobs:
 
             - name: Preparation TPCH 0.1
               if: github.ref == 'refs/heads/main'
-              uses: duckdb/duckdb-wasm-ci-env@ae43fa250a6b6ba92fe3d825c6c34b6d68a258a0
+              uses: duckdb/duckdb-wasm-ci-env@f10a0954b7b2b98e8526e0f7bbcb10e614defcbd
               with:
                   script: |-
                       git config --global --add safe.directory '*'
@@ -836,7 +859,7 @@ jobs:
 
             - name: Preparation TPCH 0.25
               if: github.ref == 'refs/heads/main'
-              uses: duckdb/duckdb-wasm-ci-env@ae43fa250a6b6ba92fe3d825c6c34b6d68a258a0
+              uses: duckdb/duckdb-wasm-ci-env@f10a0954b7b2b98e8526e0f7bbcb10e614defcbd
               with:
                   script: |-
                       git config --global --add safe.directory '*'
@@ -870,7 +893,7 @@ jobs:
 
             - name: Preparation TPCH 0.5
               if: github.ref == 'refs/heads/main'
-              uses: duckdb/duckdb-wasm-ci-env@ae43fa250a6b6ba92fe3d825c6c34b6d68a258a0
+              uses: duckdb/duckdb-wasm-ci-env@f10a0954b7b2b98e8526e0f7bbcb10e614defcbd
               with:
                   script: |-
                       git config --global --add safe.directory '*'
@@ -982,7 +1005,7 @@ jobs:
                   (cd ./submodules/duckdb && git fetch --all --tags)
 
             - name: Prepare environment
-              uses: duckdb/duckdb-wasm-ci-env@ae43fa250a6b6ba92fe3d825c6c34b6d68a258a0
+              uses: duckdb/duckdb-wasm-ci-env@f10a0954b7b2b98e8526e0f7bbcb10e614defcbd
               with:
                   script: |-
                       git config --global --add safe.directory '*'
@@ -1021,7 +1044,7 @@ jobs:
                       CHROME_BIN=`which google-chrome` yarn workspace @duckdb/duckdb-wasm test:chrome
             
             #            - name: Test @duckdb/duckdb-wasm on Firefox
-            #              uses: duckdb/duckdb-wasm-ci-env@ae43fa250a6b6ba92fe3d825c6c34b6d68a258a0
+            #              uses: duckdb/duckdb-wasm-ci-env@f10a0954b7b2b98e8526e0f7bbcb10e614defcbd
             #              with:
             #                  script: |-
             #                      yarn workspace @duckdb/duckdb-wasm test:firefox
@@ -1044,10 +1067,6 @@ jobs:
               with:
                   name: duckdb-wasm-packages-loadable
                   path: duckdb-wasm-packages.zip
-
-            - name: Measure NPM stats
-              run: |
-                  ./scripts/npm_measure_lib.sh
 
             - name: Publish to NPM
               env:
@@ -1129,7 +1148,7 @@ jobs:
                   retention-days: 1
 
             - name: Merge benchmark reports
-              uses: duckdb/duckdb-wasm-ci-env@ae43fa250a6b6ba92fe3d825c6c34b6d68a258a0
+              uses: duckdb/duckdb-wasm-ci-env@f10a0954b7b2b98e8526e0f7bbcb10e614defcbd
               with:
                   script: |-
                       chmod +x ./target/release/dataprep

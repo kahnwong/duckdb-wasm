@@ -319,6 +319,13 @@ rapidjson::Value WebFileSystem::WebFile::WriteInfo(rapidjson::Document &doc) con
         filesystem_.config_->filesystem.allow_full_http_reads.value_or(true)) {
         value.AddMember("allowFullHttpReads", true, allocator);
     }
+
+    if ((data_protocol_ == DataProtocol::HTTP || data_protocol_ == DataProtocol::S3)) {
+        if (filesystem_.config_->duckdb_config_options.reliable_head_requests)
+            value.AddMember("reliableHeadRequests", true, allocator);
+        else
+            value.AddMember("reliableHeadRequests", false, allocator);
+    }
     value.AddMember("collectStatistics", filesystem_.file_statistics_->TracksFile(file_name_), doc.GetAllocator());
 
     if (data_protocol_ == DataProtocol::S3) {
@@ -493,6 +500,11 @@ rapidjson::Value WebFileSystem::WriteGlobalFileInfo(rapidjson::Document &doc, ui
     if (config_->filesystem.allow_full_http_reads.value_or(true)) {
         value.AddMember("allowFullHttpReads", true, allocator);
     }
+    if (config_->filesystem.reliable_head_requests.value_or(true)) {
+        value.AddMember("reliableHeadRequests", true, allocator);
+    } else {
+        value.AddMember("reliableHeadRequests", false, allocator);
+    }
 
     value.AddMember("s3Config", writeS3Config(config_->duckdb_config_options, allocator), allocator);
 
@@ -585,8 +597,8 @@ void WebFileSystem::IncrementCacheEpoch() {
 }
 
 /// Open a file
-duckdb::unique_ptr<duckdb::FileHandle> WebFileSystem::OpenFile(const string &url, uint8_t flags, FileLockType lock,
-                                                               FileCompressionType compression, FileOpener *opener) {
+duckdb::unique_ptr<duckdb::FileHandle> WebFileSystem::OpenFile(const string &url, duckdb::FileOpenFlags flags,
+                                                               optional_ptr<FileOpener> opener) {
     DEBUG_TRACE();
     std::unique_lock<LightMutex> fs_guard{fs_mutex_};
 
@@ -619,7 +631,7 @@ duckdb::unique_ptr<duckdb::FileHandle> WebFileSystem::OpenFile(const string &url
     // Try to open the file (if necessary)
     switch (file->data_protocol_) {
         case DataProtocol::BUFFER:
-            if ((flags & duckdb::FileFlags::FILE_FLAGS_FILE_CREATE_NEW) != 0) {
+            if (flags.OverwriteExistingFile()) {
                 file->data_buffer_->Resize(0);
                 file->file_size_ = 0;
             }
@@ -633,8 +645,11 @@ duckdb::unique_ptr<duckdb::FileHandle> WebFileSystem::OpenFile(const string &url
         case DataProtocol::S3:
             try {
                 // Open the file
-                auto *opened = duckdb_web_fs_file_open(file->file_id_, flags);
+                auto *opened = duckdb_web_fs_file_open(file->file_id_, flags.flags);
                 if (opened == nullptr) {
+                    if (flags.ReturnNullIfNotExists()) {
+                        return nullptr;
+                    }
                     std::string msg = std::string{"Failed to open file: "} + file->file_name_;
                     throw std::runtime_error(msg);
                 }
@@ -648,7 +663,7 @@ duckdb::unique_ptr<duckdb::FileHandle> WebFileSystem::OpenFile(const string &url
                 //  3: The file is a native file that was not found, in this case a fallback occurs to an empty buffer
                 if (buffer_ptr) {
                     if ((file->data_protocol_ == DataProtocol::S3 || file->data_protocol_ == DataProtocol::HTTP) &&
-                        (flags & duckdb::FileFlags::FILE_FLAGS_WRITE)) {
+                        flags.OpenForWriting()) {
                         file->buffered_http_file_ = true;
                         file->buffered_http_config_options_ = config_->duckdb_config_options;
                     }
@@ -660,7 +675,7 @@ duckdb::unique_ptr<duckdb::FileHandle> WebFileSystem::OpenFile(const string &url
                 }
 
                 // Truncate file?
-                if ((flags & duckdb::FileFlags::FILE_FLAGS_FILE_CREATE_NEW) != 0) {
+                if (flags.OverwriteExistingFile()) {
                     file_guard.unlock();
                     Truncate(*handle, 0);
                     file_guard.lock();
@@ -935,15 +950,15 @@ void WebFileSystem::Truncate(duckdb::FileHandle &handle, int64_t new_size) {
     InvalidateReadAheads(file.file_id_, file_guard);
 }
 /// Check if a directory exists
-bool WebFileSystem::DirectoryExists(const std::string &directory) {
+bool WebFileSystem::DirectoryExists(const std::string &directory, optional_ptr<FileOpener> opener) {
     return duckdb_web_fs_directory_exists(directory.c_str(), directory.size());
 }
 /// Create a directory if it does not exist
-void WebFileSystem::CreateDirectory(const std::string &directory) {
+void WebFileSystem::CreateDirectory(const std::string &directory, optional_ptr<FileOpener> opener) {
     duckdb_web_fs_directory_create(directory.c_str(), directory.size());
 }
 /// Recursively remove a directory and all files in it
-void WebFileSystem::RemoveDirectory(const std::string &directory) {
+void WebFileSystem::RemoveDirectory(const std::string &directory, optional_ptr<FileOpener> opener) {
     return duckdb_web_fs_directory_remove(directory.c_str(), directory.size());
 }
 /// List files in a directory, invoking the callback method for each one with (filename, is_dir)
@@ -957,7 +972,7 @@ bool WebFileSystem::ListFiles(const std::string &directory,
 }
 /// Move a file from source path to the target, StorageManager relies on this being an atomic action for ACID
 /// properties
-void WebFileSystem::MoveFile(const std::string &source, const std::string &target) {
+void WebFileSystem::MoveFile(const std::string &source, const std::string &target, optional_ptr<FileOpener> opener) {
     std::unique_lock<LightMutex> fs_guard{fs_mutex_};
     if (auto iter = files_by_url_.find(source); iter != files_by_url_.end()) {
         auto file = std::move(iter->second);
@@ -974,13 +989,13 @@ void WebFileSystem::MoveFile(const std::string &source, const std::string &targe
     duckdb_web_fs_file_move(source.c_str(), source.size(), target.c_str(), target.size());
 }
 /// Check if a file exists
-bool WebFileSystem::FileExists(const std::string &filename) {
+bool WebFileSystem::FileExists(const std::string &filename, optional_ptr<FileOpener> opener) {
     auto iter = files_by_name_.find(filename);
     if (iter != files_by_name_.end()) return true;
     return duckdb_web_fs_file_exists(filename.c_str(), filename.size());
 }
 /// Remove a file from disk
-void WebFileSystem::RemoveFile(const std::string &filename) {}
+void WebFileSystem::RemoveFile(const std::string &filename, optional_ptr<FileOpener> opener) {}
 
 /// Sync a file handle to disk
 void WebFileSystem::FileSync(duckdb::FileHandle &handle) {
@@ -1056,6 +1071,10 @@ rapidjson::Value WebFileSystem::writeS3Config(DuckDBConfigOptions &extension_opt
     s3_session_token = rapidjson::Value{extension_options.s3_session_token.c_str(),
                                         static_cast<rapidjson::SizeType>(extension_options.s3_session_token.size())};
     s3Config.AddMember("sessionToken", s3_session_token, allocator);
+
+    rapidjson::Value reliable_head_requests{rapidjson::kNullType};
+    reliable_head_requests = rapidjson::Value{extension_options.reliable_head_requests};
+    s3Config.AddMember("reliable_head_requests", s3_session_token, allocator);
 
     return s3Config;
 }

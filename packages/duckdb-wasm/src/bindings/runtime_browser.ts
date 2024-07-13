@@ -152,13 +152,14 @@ export const BROWSER_RUNTIME: DuckDBRuntime & {
                         mod.HEAPF64[(result >> 3) + 0] = 1;
                         mod.HEAPF64[(result >> 3) + 1] = data;
                         return result;
-                    } else if (flags != FileFlags.FILE_FLAGS_READ) {
+                    } else if ((flags & FileFlags.FILE_FLAGS_READ) == 0) {
                         throw new Error(`Opening file ${file.fileName} failed: unsupported file flags: ${flags}`);
                     }
 
                     // Supports ranges?
                     let contentLength = null;
                     let error: any | null = null;
+                    if (file.reliableHeadRequests || !file.allowFullHttpReads) {
                     try {
                         // Send a dummy HEAD request with range protocol
                         //          -> good IFF status is 206 and contentLenght is present
@@ -180,14 +181,16 @@ export const BROWSER_RUNTIME: DuckDBRuntime & {
                             mod.HEAPF64[(result >> 3) + 1] = 0;
                             return result;
                         }
+
                     } catch (e: any) {
                         error = e;
                         console.warn(`HEAD request with range header failed: ${e}`);
                     }
+                    }
 
                     // Try to fallback to full read?
                     if (file.allowFullHttpReads) {
-                        if ((contentLength !== null) && (+contentLength > 1)) {
+                        {
                             // 2. Send a dummy GET range request querying the first byte of the file
                             //          -> good IFF status is 206 and contentLenght2 is 1
                             //          -> otherwise, iff 200 and contentLenght2 == contentLenght
@@ -202,15 +205,39 @@ export const BROWSER_RUNTIME: DuckDBRuntime & {
                             xhr.responseType = 'arraybuffer';
                             xhr.setRequestHeader('Range', `bytes=0-0`);
                             xhr.send(null);
+                            const contentRange = xhr.getResponseHeader('Content-Range')?.split('/')[1];
                             const contentLength2 = xhr.getResponseHeader('Content-Length');
 
-                            if (xhr.status == 206 && contentLength2 !== null && +contentLength2 == 1) {
+                            let presumedLength = null;
+                            if (contentRange !== undefined) {
+                                presumedLength = contentRange;
+                            } else if (!file.reliableHeadRequests) {
+                                // Send a dummy HEAD request with range protocol
+                                //          -> good IFF status is 206 and contentLenght is present
+                                const head = new XMLHttpRequest();
+                                if (file.dataProtocol == DuckDBDataProtocol.S3) {
+                                    head.open('HEAD', getHTTPUrl(file.s3Config, file.dataUrl!), false);
+                                    addS3Headers(head, file.s3Config, file.dataUrl!, 'HEAD');
+                                } else {
+                                    head.open('HEAD', file.dataUrl!, false);
+                                }
+                                head.setRequestHeader('Range', `bytes=0-`);
+                                head.send(null);
+   
+                                // Supports range requests
+                                contentLength = head.getResponseHeader('Content-Length');
+                                if (contentLength !== null && +contentLength > 1) {
+                                    presumedLength = contentLength;
+                                }
+                            }
+
+                            if (xhr.status == 206 && contentLength2 !== null && +contentLength2 == 1 && presumedLength !== null) {
                                 const result = mod._malloc(2 * 8);
-                                mod.HEAPF64[(result >> 3) + 0] = +contentLength;
+                                mod.HEAPF64[(result >> 3) + 0] = +presumedLength;
                                 mod.HEAPF64[(result >> 3) + 1] = 0;
                                 return result;
                             }
-                            if (xhr.status == 200 && contentLength2 !== null && +contentLength2 == +contentLength) {
+                            if (xhr.status == 200 && contentLength2 !== null && contentLength !== null && +contentLength2 == +contentLength) {
                                 console.warn(`fall back to full HTTP read for: ${file.dataUrl}`);
                                 const data = mod._malloc(xhr.response.byteLength);
                                 const src = new Uint8Array(xhr.response, 0, xhr.response.byteLength);
@@ -299,7 +326,7 @@ export const BROWSER_RUNTIME: DuckDBRuntime & {
                     // so we need (if enabled) to bump to a ranged GET
                     if (!BROWSER_RUNTIME.getGlobalFileInfo(mod)?.allowFullHttpReads) {
                         failWith(mod, `HEAD request failed: ${path}, with full http reads are disabled`);
-                        return;
+                        return 0;
                     }
                     const xhr2 = new XMLHttpRequest();
                     if (path.startsWith('s3://')) {
@@ -313,7 +340,7 @@ export const BROWSER_RUNTIME: DuckDBRuntime & {
                     xhr2.send(null);
                     if (xhr2.status != 200 && xhr2.status !== 206) {
                         failWith(mod, `HEAD and GET requests failed: ${path}`);
-                        return;
+                        return 0;
                     }
                     const contentLength = xhr2.getResponseHeader('Content-Length');
                     if (contentLength && (+contentLength > 1)) {
